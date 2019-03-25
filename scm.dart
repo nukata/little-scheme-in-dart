@@ -1,12 +1,14 @@
 #!/usr/bin/env dart
-// A little Scheme in Dart 2.2 v0.1 H31.03.23/H31.03.24 by SUZUKI Hisao
+// A little Scheme in Dart 2.2 v0.1 H31.03.23/H31.03.25 by SUZUKI Hisao
 
 import 'dart:io';
 
 /// Empty List of Scheme
 class ScmList extends Iterable<dynamic> {
+  Iterable<dynamic> _iter() sync* {}
+
   /// Yield none.
-  get iterator => () sync* {}().iterator;
+  get iterator => _iter().iterator;
 }
 
 final nil = ScmList();
@@ -18,15 +20,17 @@ class Cell extends ScmList {
 
   Cell(this.car, this.cdr);
 
+  Iterable<dynamic> _iter() sync* {
+    dynamic j = this;
+    while (j is Cell) {
+      yield j.car;
+      j = j.cdr;
+    }
+    if (!(identical(j, nil))) throw ImproperListException(j);
+  }
+
   /// Yield car, cadr, caddr and so on.
-  get iterator => () sync* {
-        dynamic j = this;
-        while (j is Cell) {
-          yield j.car;
-          j = j.cdr;
-        }
-        if (!(identical(j, nil))) throw ImproperListException(j);
-      }().iterator;
+  get iterator => _iter().iterator;
 }
 
 class ImproperListException implements Exception {
@@ -37,7 +41,6 @@ class ImproperListException implements Exception {
 
 dynamic fst(ScmList x) => (x as Cell).car;
 dynamic snd(ScmList x) => (x as Cell).cdr.car;
-dynamic trd(ScmList x) => (x as Cell).cdr.cdr.car;
 
 //----------------------------------------------------------------------
 
@@ -71,7 +74,7 @@ final callccSym = Sym('call/cc');
 
 //----------------------------------------------------------------------
 
-/// Linked list of bindings which mapping symbols to values
+/// Linked list of bindings mapping symbols to values
 class Environment extends Iterable<Environment> {
   final Sym sym;
   dynamic val;
@@ -79,13 +82,16 @@ class Environment extends Iterable<Environment> {
 
   Environment(this.sym, this.val, this.next);
 
-  get iterator => () sync* {
-        var env = this;
-        while (env != null) {
-          yield env;
-          env = env.next;
-        }
-      }().iterator;
+  Iterable<Environment> _iter() sync* {
+    var env = this;
+    while (env != null) {
+      yield env;
+      env = env.next;
+    }
+  }
+
+  /// Yield each binding.
+  get iterator => _iter().iterator;
 
   /// Search the bindings for a symbol.
   Environment lookFor(Sym symbol) {
@@ -93,7 +99,7 @@ class Environment extends Iterable<Environment> {
     throw 'name not found: $symbol';
   }
 
-  /// Build a environment prepending the bindings of symbols and data.
+  /// Build an environment prepending the bindings of symbols and data.
   Environment prependDefs(ScmList symbols, ScmList data) {
     if (identical(symbols, nil)) {
       if (!identical(data, nil)) {
