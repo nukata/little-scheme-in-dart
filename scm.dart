@@ -1,5 +1,5 @@
 #!/usr/bin/env dart
-// A little Scheme in Dart 2.2 v0.1 H31.03.23/H31.03.25 by SUZUKI Hisao
+// A little Scheme in Dart 2.2 v0.1 H31.03.23/R01.05.06 by SUZUKI Hisao
 
 import 'dart:io';
 
@@ -30,7 +30,7 @@ class Cell extends ScmList {
   }
 
   /// Yield car, cadr, caddr and so on.
-  get iterator => _iter().iterator;
+  Iterator<dynamic> get iterator => _iter().iterator;
 }
 
 class ImproperListException implements Exception {
@@ -91,7 +91,7 @@ class Environment extends Iterable<Environment> {
   }
 
   /// Yield each binding.
-  get iterator => _iter().iterator;
+  Iterator<Environment> get iterator => _iter().iterator;
 
   /// Search the bindings for a symbol.
   Environment lookFor(Sym symbol) {
@@ -139,27 +139,36 @@ class Step {
   Step(this.op, this.val);
 }
 
-class Continuation {
-  final List<Step> list = <Step>[];
+// Scheme's continuation as a stack of steps
+class Continuation extends Iterable<Step> {
+  final List<Step> _stack = [];
 
-  bool get isEmpty => list.isEmpty;
+  bool get isEmpty => _stack.isEmpty;
+  int get length => _stack.length;
+
+  Iterable<Step> _iter() sync* {
+    for (var step in _stack) yield step;
+  }
+
+  /// Yield each step.
+  Iterator<Step> get iterator => _iter().iterator;
 
   /// Append a step to the tail of the continuation.
-  void push(ContOp op, dynamic value) => list.add(Step(op, value));
+  void push(ContOp op, dynamic value) => _stack.add(Step(op, value));
 
   /// Pop a step from the tail of the continuation.
-  Step pop() => list.removeLast();
+  Step pop() => _stack.removeLast();
 
   /// Copy a continuation.
   void copyFrom(Continuation other) {
-    list.clear();
-    list.addAll(other.list);
+    _stack.clear();
+    _stack.addAll(other._stack);
   }
 
   /// Push restoreEnvOp unless on a tail call.
   void pushRestoreEnv(Environment env) {
-    int len = list.length;
-    if (len == 0 || list[len - 1].op != ContOp.restoreEnvOp) {
+    int len = _stack.length;
+    if (len == 0 || _stack[len - 1].op != ContOp.restoreEnvOp) {
       push(ContOp.restoreEnvOp, env);
     }
   }
@@ -220,7 +229,7 @@ String stringify(dynamic exp, [bool quote = true]) {
     return '#<' + ss.join(' ') + '>';
   } else if (exp is Continuation) {
     var ss = <String>[];
-    for (var step in exp.list) ss.add('${step.op} ${stringify(step.val)}');
+    for (var step in exp) ss.add('${step.op} ${stringify(step.val)}');
     return '#<' + ss.join('\n\t  ') + '>';
   } else if (exp is Closure) {
     var p = stringify(exp.params);
@@ -347,7 +356,7 @@ Object evaluate(dynamic exp, Environment env) {
       }
       Loop2:
       for (;;) {
-        // stdout.write(' _${k.list.length}');
+        // stdout.write(' _${k.length}');
         if (k.isEmpty) {
           return exp;
         }
