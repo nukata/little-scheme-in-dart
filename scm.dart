@@ -1,20 +1,10 @@
 #!/usr/bin/env dart
-// A little Scheme in Dart 2.2 v0.1 H31.03.23/R01.05.06 by SUZUKI Hisao
+// A little Scheme in Dart 2.3 v0.2 H31.03.23/R01.06.07 by SUZUKI Hisao
 
 import 'dart:io';
 
-/// Empty List of Scheme
-class ScmList extends Iterable<dynamic> {
-  Iterable<dynamic> _iter() sync* {}
-
-  /// Yield none.
-  get iterator => _iter().iterator;
-}
-
-final nil = ScmList();
-
 /// Cons cell
-class Cell extends ScmList {
+class Cell extends Iterable<dynamic> {
   dynamic car;
   dynamic cdr;
 
@@ -26,7 +16,7 @@ class Cell extends ScmList {
       yield j.car;
       j = j.cdr;
     }
-    if (!(identical(j, nil))) throw ImproperListException(j);
+    if (j != null) throw ImproperListException(j);
   }
 
   /// Yield car, cadr, caddr and so on.
@@ -38,9 +28,6 @@ class ImproperListException implements Exception {
 
   ImproperListException(this.tail);
 }
-
-dynamic fst(ScmList x) => (x as Cell).car;
-dynamic snd(ScmList x) => (x as Cell).cdr.car;
 
 //----------------------------------------------------------------------
 
@@ -100,18 +87,18 @@ class Environment extends Iterable<Environment> {
   }
 
   /// Build an environment prepending the bindings of symbols and data.
-  Environment prependDefs(ScmList symbols, ScmList data) {
-    if (identical(symbols, nil)) {
-      if (!identical(data, nil)) {
+  Environment prependDefs(Cell symbols, Cell data) {
+    if (symbols == null) {
+      if (data != null) {
         throw 'surplus arg: ${stringify(data)}';
       }
       return this;
     } else {
-      if (identical(data, nil)) {
+      if (data == null) {
         throw 'surplus param: ${stringify(symbols)}';
       }
-      return Environment((symbols as Cell).car, (data as Cell).car,
-          prependDefs((symbols as Cell).cdr, (data as Cell).cdr));
+      return Environment(
+          symbols.car, data.car, prependDefs(symbols.cdr, data.cdr));
     }
   }
 }
@@ -178,14 +165,14 @@ class Continuation extends Iterable<Step> {
 
 /// Lambda expression with its environment
 class Closure {
-  ScmList params;
+  Cell params;
   Cell body;
   Environment env;
 
   Closure(this.params, this.body, this.env);
 }
 
-typedef dynamic IntrinsicBody(ScmList args);
+typedef dynamic IntrinsicBody(Cell args);
 
 /// Built-in function
 class Intrinsic {
@@ -198,15 +185,22 @@ class Intrinsic {
   String toString() => '#<$name:$arity>';
 }
 
+/// A unique value which means the expression has no value.
+final none = Object();
+
 //----------------------------------------------------------------------
 
 /// Convert an expression to a string.
 String stringify(dynamic exp, [bool quote = true]) {
-  if (identical(exp, true)) {
+  if (exp == true) {
     return '#t';
-  } else if (identical(exp, false)) {
+  } else if (exp == false) {
     return '#f';
-  } else if (exp is ScmList) {
+  } else if (exp == none) {
+    return '#<VOID>';
+  } else if (exp == null) {
+    return '()';
+  } else if (exp is Cell) {
     var ss = <String>[];
     try {
       for (var e in exp) ss.add(stringify(e, quote));
@@ -245,10 +239,10 @@ String stringify(dynamic exp, [bool quote = true]) {
 //----------------------------------------------------------------------
 
 /// Return a list of symbols of the global environment.
-ScmList _globals(ScmList x) {
-  var j = nil;
-  var env = globalEnv.next; // Take next to skip the marker.
-  for (var e in env) j = Cell(e.sym, j);
+Cell _globals(Cell x) {
+  Cell j = null;
+  Environment env = globalEnv.next; // Skip the marker.
+  for (Environment e in env) j = Cell(e.sym, j);
   return j;
 }
 
@@ -257,50 +251,53 @@ Environment _(String name, int arity, IntrinsicBody fun, Environment next) =>
 
 Environment _g1 = 
   _('display', 1,
-      (ScmList x) { stdout.write(stringify(fst(x), false)); return null; },
+      (Cell x) { stdout.write(stringify(x.car, false)); return none; },
       _('newline', 0,
-          (ScmList x) { stdout.writeln(); return null; },
+          (Cell x) { stdout.writeln(); return none; },
           _('read', 0,
-              (ScmList x) => readExpression('', ''),
+              (Cell x) => readExpression('', ''),
               _('eof-object?', 1,
-                  (ScmList x) => identical(fst(x), #EOF),
+                  (Cell x) => x.car == #EOF,
                   _('symbol?', 1,
-                      (ScmList x) => fst(x) is Sym,
+                      (Cell x) => x.car is Sym,
                       _('+', 2,
-                          (ScmList x) => fst(x) + snd(x),
+                          (Cell x) => x.car + x.cdr.car,
                           _('-', 2,
-                              (ScmList x) => fst(x) - snd(x),
+                              (Cell x) => x.car - x.cdr.car,
                               _('*', 2,
-                                  (ScmList x) => fst(x) * snd(x),
+                                  (Cell x) => x.car * x.cdr.car,
                                   _('<', 2,
-                                      (ScmList x) => fst(x) < snd(x),
+                                      (Cell x) => x.car < x.cdr.car,
                                       _('=', 2,
-                                          (ScmList x) => fst(x) == snd(x),
+                                          (Cell x) => x.car == x.cdr.car,
                                           _('globals', 0,
                                               _globals,
                                               null)))))))))));
 
 Environment globalEnv = Environment(
-    null, null, // marker of the frame top
+    null, // marker of the frame top
+    null,
     _('car', 1,
-        (ScmList x) => fst(x).car,
+        (Cell x) => x.car.car,
         _('cdr', 1,
-            (ScmList x) => fst(x).cdr,
+            (Cell x) => x.car.cdr,
             _('cons', 2,
-                (ScmList x) => Cell(fst(x), snd(x)),
+                (Cell x) => Cell(x.car, x.cdr.car),
                 _('eq?', 2,
-                    (ScmList x) => identical(fst(x), snd(x)),
+                    (Cell x) => identical(x.car, x.cdr.car),
                     _('eqv?', 2,
-                        (ScmList x) => fst(x) == snd(x),
+                        (Cell x) => x.car == x.cdr.car,
                         _('pair?', 1,
-                            (ScmList x) => fst(x) is Cell,
+                            (Cell x) => x.car is Cell,
                             _('null?', 1,
-                                (ScmList x) => identical(fst(x), nil),
+                                (Cell x) => x.car == null,
                                 _('not', 1,
-                                    (ScmList x) => identical(fst(x), false),
+                                    (Cell x) => x.car == false,
                                     _('list', -1,
-                                        (ScmList x) => x,
-                                        Environment(callccSym, callccSym,
+                                        (Cell x) => x,
+                                        Environment(
+                                            callccSym,
+                                            callccSym,
                                             Environment(applySym, applySym,
                                                 _g1))))))))))));
 
@@ -326,7 +323,7 @@ Object evaluate(dynamic exp, Environment env) {
           } else if (identical(kar, beginSym)) {
             // (begin e...)
             exp = kdr.car;
-            if (!(identical(kdr.cdr, nil))) {
+            if (kdr.cdr != null) {
               k.push(ContOp.beginOp, kdr.cdr);
             }
           } else if (identical(kar, lambdaSym)) {
@@ -365,9 +362,9 @@ Object evaluate(dynamic exp, Environment env) {
         dynamic x = step.val;
         switch (op) {
           case ContOp.thenOp: // x = (e2 e3)
-            if (identical(exp, false)) {
-              if (identical(x.cdr, nil)) {
-                exp = null;
+            if (exp == false) {
+              if (x.cdr == null) {
+                exp = none;
               } else {
                 exp = x.cdr.car; // e3
                 break Loop2;
@@ -378,33 +375,33 @@ Object evaluate(dynamic exp, Environment env) {
             }
             break;
           case ContOp.beginOp: //  x = (e...)
-            if (!identical(x.cdr, nil)) {
-              k.push(ContOp.beginOp, x.cdr); // unless on a tail call
+            if (x.cdr != null) {
+              k.push(ContOp.beginOp, x.cdr); // unless on a tail call.
             }
             exp = x.car;
             break Loop2;
           case ContOp.defineOp: // x = v
-            assert(identical(env.sym, nil)); // Check for the frame top.
+            assert(env.sym == null); // Check for the frame top.
             env.next = Environment(x, exp, env.next);
-            exp = null;
+            exp = none;
             break;
           case ContOp.setqOp: // x = Environment(v, e, ...)
             x.val = exp;
-            exp = null;
+            exp = none;
             break;
           case ContOp.applyOp: // x = arg...; exp = function
-            if (identical(x, nil)) {
-              var pair = applyFunction(exp, nil, k, env);
+            if (x == null) {
+              var pair = applyFunction(exp, null, k, env);
               exp = pair.result;
               env = pair.env;
             } else {
               k.push(ContOp.applyFunOp, exp);
-              while (!identical(x.cdr, nil)) {
+              while (x.cdr != null) {
                 k.push(ContOp.evalArgOp, x.car);
                 x = x.cdr;
               }
               exp = x.car;
-              k.push(ContOp.pushArgOp, nil);
+              k.push(ContOp.pushArgOp, null);
               break Loop2;
             }
             break;
@@ -450,36 +447,39 @@ class ResultEnvPair {
 /// Apply a function to arguments with a continuation.
 /// [env] will be referred to push [ContOp.restoreEnvOp] to the continuation.
 ResultEnvPair applyFunction(
-    dynamic fun, ScmList arg, Continuation k, Environment env) {
+    dynamic fun, Cell arg, Continuation k, Environment env) {
   for (;;) {
     if (identical(fun, callccSym)) {
       k.pushRestoreEnv(env);
-      fun = fst(arg);
+      fun = arg.car;
       var cont = Continuation();
       cont.copyFrom(k);
-      arg = Cell(cont, nil);
+      arg = Cell(cont, null);
     } else if (identical(fun, applySym)) {
-      fun = fst(arg);
-      arg = snd(arg);
+      fun = arg.car;
+      arg = arg.cdr.car;
     } else {
       break;
     }
   }
   if (fun is Intrinsic) {
-    if (fun.arity >= 0 && arg.length != fun.arity)
-      throw 'arity not matched: $fun and ${stringify(arg)}';
+    if (fun.arity >= 0) {
+      if (arg == null ? fun.arity > 0 : arg.length != fun.arity)
+        throw 'arity not matched: $fun and ${stringify(arg)}';
+    }
     return ResultEnvPair(fun.fun(arg), env);
   } else if (fun is Closure) {
     k.pushRestoreEnv(env);
     k.push(ContOp.beginOp, fun.body);
     return ResultEnvPair(
-        null,
+        none,
         Environment(
-            null, null, // marker of the frame top
+            null, // marker of the frame top
+            null,
             fun.env.prependDefs(fun.params, arg)));
   } else if (fun is Continuation) {
     k.copyFrom(fun);
-    return ResultEnvPair(fst(arg), env);
+    return ResultEnvPair(arg.car, env);
   } else {
     throw 'not a function: ${stringify(fun)} with ${stringify(arg)}';
   }
@@ -500,7 +500,7 @@ List<String> splitStringIntoTokens(String source) {
       if (i % 2 == 0) {
         x.add(e);
       } else {
-        ss.add('"' + e); // e is a string literal.
+        ss.add('"' + e); // Store a string literal.
         x.add('#s');
       }
       i++;
@@ -522,7 +522,7 @@ Object readFromTokens(List<String> tokens) {
   String token = tokens.removeAt(0);
   switch (token) {
     case '(':
-      Cell z = Cell(nil, nil);
+      Cell z = Cell(null, null);
       var y = z;
       while (tokens[0] != ')') {
         if (tokens[0] == '.') {
@@ -532,7 +532,7 @@ Object readFromTokens(List<String> tokens) {
           break;
         }
         var e = readFromTokens(tokens);
-        var x = Cell(e, nil);
+        var x = Cell(e, null);
         y.cdr = x;
         y = x;
       }
@@ -542,7 +542,7 @@ Object readFromTokens(List<String> tokens) {
       throw 'unexpected )';
     case "'":
       var e = readFromTokens(tokens);
-      return Cell(quoteSym, Cell(e, nil)); // 'e => (quote e)
+      return Cell(quoteSym, Cell(e, null)); // 'e => (quote e)
     case '#f':
       return false;
     case '#t':
@@ -600,12 +600,12 @@ void readEvalPrintLoop() {
   for (;;) {
     try {
       var exp = readExpression();
-      if (identical(exp, #EOF)) {
+      if (exp == #EOF) {
         print('Goodbye');
         return;
       }
       var result = evaluate(exp, globalEnv);
-      if (result != null) {
+      if (result != none) {
         print(stringify(result, true));
       }
     } catch (ex) {

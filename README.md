@@ -14,7 +14,6 @@ it optimizes _tail calls_ and handles _first-class continuations_ properly.
 ## How to run
 
 ```
-$ chmod a+x scm.dart
 $ ./scm.dart
 > (+ 5 6)
 11
@@ -93,8 +92,8 @@ in some future version of this Scheme.
 | `#f`                                | `false`                             |
 | strings `"hello, world"`            | `string`                            |
 | symbols `a`, `+`                    | `class Sym`                         |
-| `()`                                | `nil`, a singleton of `ScmList`     |
-| pairs `(1 . 2)`, `(x y z)`          | `class Cell extends ScmList`        |
+| `()`                                | `null`                              |
+| pairs `(1 . 2)`, `(x y z)`          | `class Cell`                        |
 | closures `(lambda (x) (+ x 1))`     | `class Closure`                     |
 | built-in procedures `car`, `cdr`    | `class Intrinsic`                   |
 | continuations                       | `class Continuation`                |
