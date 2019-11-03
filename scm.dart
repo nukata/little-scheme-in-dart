@@ -1,11 +1,157 @@
 #!/usr/bin/env dart
-// A little Scheme in Dart 2.3 v0.2 H31.03.23/R01.06.07 by SUZUKI Hisao
+// A little Scheme in Dart 2.5 v0.3 H31.03.23/R01.11.04 by SUZUKI Hisao
 
 import 'dart:io';
 
+const intBits = 63; // 53 for dart2js
+
+/// Converts [a] into an int if possible.
+Object normalize(BigInt a) => (a.bitLength <= intBits) ? a.toInt() : a;
+
+/// Is [a] a number?
+bool isNumber(Object a) => a is num || a is BigInt;
+
+/// Calculates [a] + [b].
+Object add(Object a, Object b) {
+  if (a is int) {
+    if (b is int) {
+      if (a.bitLength < intBits && b.bitLength < intBits) {
+        return a + b;
+      } else {
+        return normalize(BigInt.from(a) + BigInt.from(b));
+      }
+    } else if (b is double) {
+      return a + b;
+    } else if (b is BigInt) {
+      return normalize(BigInt.from(a) + b);
+    }
+  } else if (a is double) {
+    if (b is num) {
+      return a + b;
+    } else if (b is BigInt) {
+      return a + b.toDouble();
+    }
+  } else if (a is BigInt) {
+    if (b is int) {
+      return normalize(a + BigInt.from(b));
+    } else if (b is double) {
+      return a.toDouble() + b;
+    } else if (b is BigInt) {
+      return normalize(a + b);
+    }
+  }
+  throw ArgumentError("$a, $b");
+}
+
+/// Calculates [a] - [b].
+Object subtract(Object a, Object b) {
+  if (a is int) {
+    if (b is int) {
+      if (a.bitLength < intBits && b.bitLength < intBits) {
+        return a - b;
+      } else {
+        return normalize(BigInt.from(a) - BigInt.from(b));
+      }
+    } else if (b is double) {
+      return a - b;
+    } else if (b is BigInt) {
+      return normalize(BigInt.from(a) - b);
+    }
+  } else if (a is double) {
+    if (b is num) {
+      return a - b;
+    } else if (b is BigInt) {
+      return a - b.toDouble();
+    }
+  } else if (a is BigInt) {
+    if (b is int) {
+      return normalize(a - BigInt.from(b));
+    } else if (b is double) {
+      return a.toDouble() - b;
+    } else if (b is BigInt) {
+      return normalize(a - b);
+    }
+  }
+  throw ArgumentError("$a, $b");
+}
+
+/// Compares [a] and [b].
+/// Returns -1, 0 or 1 as [a] is less than, equal to, or greater than [b].
+num compare(Object a, Object b) {
+  if (a is int) {
+    if (b is int) {
+      if (a.bitLength < intBits && b.bitLength < intBits) {
+        return (a - b).sign;
+      } else {
+        return (BigInt.from(a) - BigInt.from(b)).sign;
+      }
+    } else if (b is double) {
+      return (a - b).sign;
+    } else if (b is BigInt) {
+      return (BigInt.from(a) - b).sign;
+    }
+  } else if (a is double) {
+    if (b is num) {
+      return (a - b).sign;
+    } else if (b is BigInt) {
+      return (a - b.toDouble()).sign;
+    }
+  } else if (a is BigInt) {
+    if (b is int) {
+      return (a - BigInt.from(b)).sign;
+    } else if (b is double) {
+      return (a.toDouble() - b).sign;
+    } else if (b is BigInt) {
+      return (a - b).sign;
+    }
+  }
+  throw ArgumentError("$a, $b");
+}
+
+/// Calculates [a] * [b].
+Object multiply(Object a, Object b) {
+  if (a is int) {
+    if (b is int) {
+      if (a.bitLength + b.bitLength < intBits) {
+        return a * b;
+      } else {
+        return normalize(BigInt.from(a) * BigInt.from(b));
+      }
+    } else if (b is double) {
+      return a * b;
+    } else if (b is BigInt) {
+      return BigInt.from(a) * b;
+    }
+  } else if (a is double) {
+    if (b is num) {
+      return a * b;
+    } else if (b is BigInt) {
+      return a * b.toDouble();
+    }
+  } else if (a is BigInt) {
+    if (b is int) {
+      return a * BigInt.from(b);
+    } else if (b is double) {
+      return a.toDouble() * b;
+    } else if (b is BigInt) {
+      return a * b;
+    }
+  }
+  throw ArgumentError("$a, $b");
+}
+
+/// Tries to parse a string as an int, a BigInt or a double.
+/// Returns null if [s] was not parsed successfully.
+Object tryParse(String s) {
+  var r = BigInt.tryParse(s);
+  return (r == null) ? double.tryParse(s) : normalize(r);
+}
+
+//----------------------------------------------------------------------
+
 /// Cons cell
 class Cell extends Iterable<dynamic> {
-  dynamic car;
+  final dynamic car;
   dynamic cdr;
 
   Cell(this.car, this.cdr);
@@ -19,12 +165,12 @@ class Cell extends Iterable<dynamic> {
     if (j != null) throw ImproperListException(j);
   }
 
-  /// Yield car, cadr, caddr and so on.
+  /// Yields car, cadr, caddr and so on.
   Iterator<dynamic> get iterator => _iter().iterator;
 }
 
 class ImproperListException implements Exception {
-  final dynamic tail;
+  final Object tail;
 
   ImproperListException(this.tail);
 }
@@ -35,8 +181,8 @@ class ImproperListException implements Exception {
 class Sym {
   final String name;
 
-  /// Construct a symbol that is not interned yet.
-  Sym.notInterned(this.name);
+  /// Constructs a symbol that is not interned yet.
+  const Sym.notInterned(this.name);
 
   @override
   String toString() => name;
@@ -44,9 +190,9 @@ class Sym {
   /// The table of interned symbols
   static final Map<String, Sym> symbols = {};
 
-  /// Construct an interned symbol.
+  /// Constructs an interned symbol.
   factory Sym(String name) {
-    return symbols.putIfAbsent(name, () => Sym.notInterned(name));
+    return symbols.putIfAbsent(name, () => new Sym.notInterned(name));
   }
 }
 
@@ -64,7 +210,7 @@ final callccSym = Sym('call/cc');
 /// Linked list of bindings mapping symbols to values
 class Environment extends Iterable<Environment> {
   final Sym sym;
-  dynamic val;
+  Object val;
   Environment next;
 
   Environment(this.sym, this.val, this.next);
@@ -77,16 +223,16 @@ class Environment extends Iterable<Environment> {
     }
   }
 
-  /// Yield each binding.
+  /// Yields each binding.
   Iterator<Environment> get iterator => _iter().iterator;
 
-  /// Search the bindings for a symbol.
+  /// Searches the bindings for [symbol].
   Environment lookFor(Sym symbol) {
     for (var env in this) if (identical(env.sym, symbol)) return env;
     throw 'name not found: $symbol';
   }
 
-  /// Build an environment prepending the bindings of symbols and data.
+  /// Builds an environment prepending the bindings of [symbols] and [data].
   Environment prependDefs(Cell symbols, Cell data) {
     if (symbols == null) {
       if (data != null) {
@@ -120,8 +266,8 @@ enum ContOp {
 
 /// Scheme's step in a continuation
 class Step {
-  ContOp op;
-  dynamic val;
+  final ContOp op;
+  final Object val;
 
   Step(this.op, this.val);
 }
@@ -137,22 +283,22 @@ class Continuation extends Iterable<Step> {
     for (var step in _stack) yield step;
   }
 
-  /// Yield each step.
+  /// Yields each step.
   Iterator<Step> get iterator => _iter().iterator;
 
-  /// Append a step to the tail of the continuation.
-  void push(ContOp op, dynamic value) => _stack.add(Step(op, value));
+  /// Appends a step to the tail of the continuation.
+  void push(ContOp op, Object value) => _stack.add(Step(op, value));
 
-  /// Pop a step from the tail of the continuation.
+  /// Pops a step from the tail of the continuation.
   Step pop() => _stack.removeLast();
 
-  /// Copy a continuation.
+  /// Copies a continuation.
   void copyFrom(Continuation other) {
     _stack.clear();
     _stack.addAll(other._stack);
   }
 
-  /// Push restoreEnvOp unless on a tail call.
+  /// Pushes [ContOp.restoreEnvOp] unless on a tail call.
   void pushRestoreEnv(Environment env) {
     int len = _stack.length;
     if (len == 0 || _stack[len - 1].op != ContOp.restoreEnvOp) {
@@ -165,14 +311,14 @@ class Continuation extends Iterable<Step> {
 
 /// Lambda expression with its environment
 class Closure {
-  Cell params;
-  Cell body;
-  Environment env;
+  final Cell params;
+  final Cell body;
+  final Environment env;
 
   Closure(this.params, this.body, this.env);
 }
 
-typedef dynamic IntrinsicBody(Cell args);
+typedef Object IntrinsicBody(Cell args);
 
 /// Built-in function
 class Intrinsic {
@@ -185,13 +331,23 @@ class Intrinsic {
   String toString() => '#<$name:$arity>';
 }
 
-/// A unique value which means the expression has no value.
-final none = Object();
+/// Exception thrown by error procedure of SRFI-23
+class ErrorException implements Exception {
+  final Object reason;
+  final Object arg;
+
+  ErrorException(Object this.reason, Object this.arg);
+  @override
+  String toString() => stringify(reason, false) + ': ' + stringify(arg);
+}
+
+/// A unique value which means that the expression has no value.
+const none = Object();
 
 //----------------------------------------------------------------------
 
-/// Convert an expression to a string.
-String stringify(dynamic exp, [bool quote = true]) {
+/// Converts an expression to a string.
+String stringify(Object exp, [bool quote = true]) {
   if (exp == true) {
     return '#t';
   } else if (exp == false) {
@@ -238,10 +394,10 @@ String stringify(dynamic exp, [bool quote = true]) {
 
 //----------------------------------------------------------------------
 
-/// Return a list of symbols of the global environment.
+/// Returns a list of symbols of the global environment.
 Cell _globals(Cell x) {
   Cell j = null;
-  Environment env = globalEnv.next; // Skip the marker.
+  Environment env = globalEnv.next; // Skips the marker.
   for (Environment e in env) j = Cell(e.sym, j);
   return j;
 }
@@ -249,61 +405,54 @@ Cell _globals(Cell x) {
 Environment _(String name, int arity, IntrinsicBody fun, Environment next) =>
     Environment(Sym(name), Intrinsic(name, arity, fun), next);
 
-Environment _g1 = 
-  _('display', 1,
-      (Cell x) { stdout.write(stringify(x.car, false)); return none; },
-      _('newline', 0,
-          (Cell x) { stdout.writeln(); return none; },
-          _('read', 0,
-              (Cell x) => readExpression('', ''),
-              _('eof-object?', 1,
-                  (Cell x) => x.car == #EOF,
-                  _('symbol?', 1,
-                      (Cell x) => x.car is Sym,
-                      _('+', 2,
-                          (Cell x) => x.car + x.cdr.car,
-                          _('-', 2,
-                              (Cell x) => x.car - x.cdr.car,
-                              _('*', 2,
-                                  (Cell x) => x.car * x.cdr.car,
-                                  _('<', 2,
-                                      (Cell x) => x.car < x.cdr.car,
-                                      _('=', 2,
-                                          (Cell x) => x.car == x.cdr.car,
-                                          _('globals', 0,
-                                              _globals,
+Environment _g1 =
+  _('eof-object?', 1, (Cell x) => x.car == #EOF,
+      _('symbol?', 1, (Cell x) => x.car is Sym,
+          _('+', 2, (Cell x) => add(x.car, x.cdr.car),
+              _('-', 2, (Cell x) => subtract(x.car, x.cdr.car),
+                  _('*', 2, (Cell x) => multiply(x.car, x.cdr.car),
+                      _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0,
+                          _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0,
+                              _('error', 2, (Cell x) =>
+                                  throw ErrorException(x.car, x.cdr.car),
+                                  _('globals', 0, _globals,
+                                      Environment(callccSym, callccSym,
+                                          Environment(applySym, applySym,
                                               null)))))))))));
 
 Environment globalEnv = Environment(
     null, // marker of the frame top
     null,
-    _('car', 1,
-        (Cell x) => x.car.car,
-        _('cdr', 1,
-            (Cell x) => x.car.cdr,
-            _('cons', 2,
-                (Cell x) => Cell(x.car, x.cdr.car),
-                _('eq?', 2,
-                    (Cell x) => identical(x.car, x.cdr.car),
-                    _('eqv?', 2,
-                        (Cell x) => x.car == x.cdr.car,
-                        _('pair?', 1,
-                            (Cell x) => x.car is Cell,
-                            _('null?', 1,
-                                (Cell x) => x.car == null,
-                                _('not', 1,
-                                    (Cell x) => x.car == false,
-                                    _('list', -1,
-                                        (Cell x) => x,
-                                        Environment(
-                                            callccSym,
-                                            callccSym,
-                                            Environment(applySym, applySym,
-                                                _g1))))))))))));
+    _('car', 1, (Cell x) => x.car.car,
+        _('cdr', 1, (Cell x) => x.car.cdr,
+            _('cons', 2, (Cell x) => Cell(x.car, x.cdr.car),
+                _('eq?', 2, (Cell x) => identical(x.car, x.cdr.car),
+                    _('eqv?', 2, (Cell x) {
+                      Object a = x.car;
+                      Object b = x.cdr.car;
+                      return a == b ||
+                          (isNumber(a) && isNumber(b) && compare(a, b) == 0);
+                    },
+                        _('pair?', 1, (Cell x) => x.car is Cell,
+                            _('null?', 1, (Cell x) => x.car == null,
+                                _('not', 1, (Cell x) => x.car == false,
+                                    _('list', -1, (Cell x) => x,
+                                        _('display', 1, (Cell x) {
+                                          stdout.write(stringify(x.car,
+                                                  false));
+                                          return none;
+                                        },
+                                            _('newline', 0, (Cell x) {
+                                              stdout.writeln();
+                                              return none;
+                                            },
+                                                _('read', 0, (Cell x) =>
+                                                    readExpression('', ''),
+                                                    _g1)))))))))))));
 
 //----------------------------------------------------------------------
 
-/// Evaluate an expression in an environment.
+/// Evaluates an expression in an environment.
 Object evaluate(dynamic exp, Environment env) {
   var k = Continuation();
   try {
@@ -432,22 +581,23 @@ Object evaluate(dynamic exp, Environment env) {
       }
     }
   } catch (ex) {
+    if (ex is ErrorException) rethrow;
     if (k.isEmpty) rethrow;
     throw '${ex}\n\t${stringify(k)}';
   }
 }
 
 class ResultEnvPair {
-  dynamic result;
-  Environment env;
+  final Object result;
+  final Environment env;
 
   ResultEnvPair(this.result, this.env);
 }
 
-/// Apply a function to arguments with a continuation.
+/// Applies a function to arguments with a continuation.
 /// [env] will be referred to push [ContOp.restoreEnvOp] to the continuation.
 ResultEnvPair applyFunction(
-    dynamic fun, Cell arg, Continuation k, Environment env) {
+    Object fun, Cell arg, Continuation k, Environment env) {
   for (;;) {
     if (identical(fun, callccSym)) {
       k.pushRestoreEnv(env);
@@ -500,12 +650,12 @@ List<String> splitStringIntoTokens(String source) {
       if (i % 2 == 0) {
         x.add(e);
       } else {
-        ss.add('"' + e); // Store a string literal.
+        ss.add('"' + e); // Stores a string literal.
         x.add('#s');
       }
       i++;
     }
-    var s = x.join(' ').split(';')[0]; // Ignore ;-comment.
+    var s = x.join(' ').split(';')[0]; // Ignores ;-comment.
     s = s.replaceAll("'", " ' ").replaceAll(')', ' ) ').replaceAll('(', ' ( ');
     x = s.split(_anySpaces);
     for (var e in x)
@@ -516,7 +666,7 @@ List<String> splitStringIntoTokens(String source) {
   return result;
 }
 
-/// Read an expression from [tokens].
+/// Reads an expression from [tokens].
 /// [tokens] will be left with the rest of token strings, if any.
 Object readFromTokens(List<String> tokens) {
   String token = tokens.removeAt(0);
@@ -551,17 +701,13 @@ Object readFromTokens(List<String> tokens) {
   if (token[0] == '"') {
     return token.substring(1);
   } else {
-    try {
-      return num.parse(token);
-    } on FormatException {
-      return Sym(token);
-    }
+    return tryParse(token) ?? Sym(token);
   }
 }
 
 //----------------------------------------------------------------------
 
-/// Load a source code from a file.
+/// Loads a source code from a file.
 void load(String fileName) {
   var file = File(fileName);
   String source = file.readAsStringSync();
@@ -575,7 +721,7 @@ void load(String fileName) {
 /// Tokens from the standard-in.
 var stdInTokens = <String>[];
 
-/// Read an expression from the standard-in.
+/// Reads an expression from the standard-in.
 Object readExpression([String prompt1 = '> ', String prompt2 = '| ']) {
   for (;;) {
     var old = List<String>.from(stdInTokens);
@@ -589,13 +735,13 @@ Object readExpression([String prompt1 = '> ', String prompt2 = '| ']) {
       stdInTokens = old;
       stdInTokens.addAll(splitStringIntoTokens(line));
     } on String {
-      stdInTokens.clear(); // Discard the erroneous tokens.
+      stdInTokens.clear(); // Discards the erroneous tokens.
       rethrow;
     }
   }
 }
 
-/// Repeat read-eval-print until End-of-File.
+/// Repeats read-eval-print until End-of-File.
 void readEvalPrintLoop() {
   for (;;) {
     try {
