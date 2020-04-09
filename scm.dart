@@ -1,5 +1,5 @@
 #!/usr/bin/env dart
-// A little Scheme in Dart 2.5 v0.3 H31.03.23/R01.11.04 by SUZUKI Hisao
+// A Little Scheme in Dart 2.7, v0.4 H31.03.23/R02.04.09 by SUZUKI Hisao
 
 import 'dart:io';
 
@@ -156,19 +156,30 @@ class Cell extends Iterable<dynamic> {
 
   Cell(this.car, this.cdr);
 
-  Iterable<dynamic> _iter() sync* {
-    dynamic j = this;
-    while (j is Cell) {
-      yield j.car;
-      j = j.cdr;
-    }
-    if (j != null) throw ImproperListException(j);
-  }
-
   /// Yields car, cadr, caddr and so on.
-  Iterator<dynamic> get iterator => _iter().iterator;
+  Iterator<dynamic> get iterator => _CellIterator(this);
+
+  // _iter().iterator where _iter() is defined as sync* {...} is slow.
 }
 
+class _CellIterator extends Iterator<dynamic> {
+  Cell j = null;
+  dynamic k;
+
+  _CellIterator(this.k);
+
+  dynamic get current => j?.car;
+
+  bool moveNext() {
+    if (k == null) return false;
+    if (k is! Cell) throw ImproperListException(k);
+    j = k;
+    k = k.cdr;
+    return true;
+  }
+}
+
+/// Exception which means that the last tail of the list is not null
 class ImproperListException implements Exception {
   final Object tail;
 
@@ -215,16 +226,10 @@ class Environment extends Iterable<Environment> {
 
   Environment(this.sym, this.val, this.next);
 
-  Iterable<Environment> _iter() sync* {
-    var env = this;
-    while (env != null) {
-      yield env;
-      env = env.next;
-    }
-  }
-
   /// Yields each binding.
-  Iterator<Environment> get iterator => _iter().iterator;
+  Iterator<Environment> get iterator => _EnvironmentIterator(this);
+
+  // _iter().iterator where _iter() is defined as sync* {...} is slow.
 
   /// Searches the bindings for [symbol].
   Environment lookFor(Sym symbol) {
@@ -235,17 +240,29 @@ class Environment extends Iterable<Environment> {
   /// Builds an environment prepending the bindings of [symbols] and [data].
   Environment prependDefs(Cell symbols, Cell data) {
     if (symbols == null) {
-      if (data != null) {
-        throw 'surplus arg: ${stringify(data)}';
-      }
+      if (data != null) throw 'surplus arg: ${stringify(data)}';
       return this;
     } else {
-      if (data == null) {
-        throw 'surplus param: ${stringify(symbols)}';
-      }
+      if (data == null) throw 'surplus param: ${stringify(symbols)}';
       return Environment(
           symbols.car, data.car, prependDefs(symbols.cdr, data.cdr));
     }
+  }
+}
+
+class _EnvironmentIterator extends Iterator<Environment> {
+  Environment j = null;
+  Environment k;
+
+  _EnvironmentIterator(this.k);
+
+  Environment get current => j;
+
+  bool moveNext() {
+    if (k == null) return false;
+    j = k;
+    k = k.next;
+    return true;
   }
 }
 
@@ -253,15 +270,15 @@ class Environment extends Iterable<Environment> {
 
 /// Operations in continuations
 enum ContOp {
-  thenOp,
-  beginOp,
-  defineOp,
-  setqOp,
-  applyOp,
-  applyFunOp,
-  evalArgOp,
-  pushArgOp,
-  restoreEnvOp
+  THEN,
+  BEGIN,
+  DEFINE,
+  SETQ,
+  APPLY,
+  APPLY_FUN,
+  EVAL_ARG,
+  CONS_ARGS,
+  RESTORE_ENV
 }
 
 /// Scheme's step in a continuation
@@ -298,11 +315,11 @@ class Continuation extends Iterable<Step> {
     _stack.addAll(other._stack);
   }
 
-  /// Pushes [ContOp.restoreEnvOp] unless on a tail call.
+  /// Pushes [ContOp.RESTORE_ENV] unless on a tail call.
   void pushRestoreEnv(Environment env) {
     int len = _stack.length;
-    if (len == 0 || _stack[len - 1].op != ContOp.restoreEnvOp) {
-      push(ContOp.restoreEnvOp, env);
+    if (len == 0 || _stack[len - 1].op != ContOp.RESTORE_ENV) {
+      push(ContOp.RESTORE_ENV, env);
     }
   }
 }
@@ -341,22 +358,18 @@ class ErrorException implements Exception {
   String toString() => stringify(reason, false) + ': ' + stringify(arg);
 }
 
-/// A unique value which means that the expression has no value.
-const none = Object();
-
 //----------------------------------------------------------------------
 
 /// Converts an expression to a string.
 String stringify(Object exp, [bool quote = true]) {
-  if (exp == true) {
-    return '#t';
-  } else if (exp == false) {
-    return '#f';
-  } else if (exp == none) {
-    return '#<VOID>';
-  } else if (exp == null) {
-    return '()';
-  } else if (exp is Cell) {
+  if (exp == true) return '#t';
+  if (exp == false) return '#f';
+  if (exp == #NONE) return '#<VOID>';
+  if (exp == #EOF) return '#<EOF>';
+  if (exp == #CALLCC) return '#<call/cc>';
+  if (exp == #APPLY) return '#<apply>';
+  if (exp == null) return '()';
+  if (exp is Cell) {
     var ss = <String>[];
     try {
       for (var e in exp) ss.add(stringify(e, quote));
@@ -406,20 +419,25 @@ Environment _(String name, int arity, IntrinsicBody fun, Environment next) =>
     Environment(Sym(name), Intrinsic(name, arity, fun), next);
 
 Environment _g1 =
+  _('+', 2, (Cell x) => add(x.car, x.cdr.car),
+      _('-', 2, (Cell x) => subtract(x.car, x.cdr.car),
+          _('*', 2, (Cell x) => multiply(x.car, x.cdr.car),
+              _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0,
+                  _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0,
+                      _('number?', 1, (Cell x) => isNumber(x.car),
+                          _('error', 2, (Cell x) =>
+                              throw ErrorException(x.car, x.cdr.car),
+                              _('globals', 0, _globals,
+                                  null))))))));
+
+Environment _g2 =
   _('eof-object?', 1, (Cell x) => x.car == #EOF,
       _('symbol?', 1, (Cell x) => x.car is Sym,
-          _('+', 2, (Cell x) => add(x.car, x.cdr.car),
-              _('-', 2, (Cell x) => subtract(x.car, x.cdr.car),
-                  _('*', 2, (Cell x) => multiply(x.car, x.cdr.car),
-                      _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0,
-                          _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0,
-                              _('error', 2, (Cell x) =>
-                                  throw ErrorException(x.car, x.cdr.car),
-                                  _('globals', 0, _globals,
-                                      Environment(callccSym, callccSym,
-                                          Environment(applySym, applySym,
-                                              null)))))))))));
+          Environment(callccSym, #CALLCC,
+              Environment(applySym, #APPLY,
+                  _g1))));
 
+/// Scheme's global environment
 Environment globalEnv = Environment(
     null, // marker of the frame top
     null,
@@ -427,28 +445,22 @@ Environment globalEnv = Environment(
         _('cdr', 1, (Cell x) => x.car.cdr,
             _('cons', 2, (Cell x) => Cell(x.car, x.cdr.car),
                 _('eq?', 2, (Cell x) => identical(x.car, x.cdr.car),
-                    _('eqv?', 2, (Cell x) {
-                      Object a = x.car;
-                      Object b = x.cdr.car;
-                      return a == b ||
-                          (isNumber(a) && isNumber(b) && compare(a, b) == 0);
-                    },
-                        _('pair?', 1, (Cell x) => x.car is Cell,
-                            _('null?', 1, (Cell x) => x.car == null,
-                                _('not', 1, (Cell x) => x.car == false,
-                                    _('list', -1, (Cell x) => x,
-                                        _('display', 1, (Cell x) {
-                                          stdout.write(stringify(x.car,
-                                                  false));
-                                          return none;
+                    _('pair?', 1, (Cell x) => x.car is Cell,
+                        _('null?', 1, (Cell x) => x.car == null,
+                            _('not', 1, (Cell x) => x.car == false,
+                                _('list', -1, (Cell x) => x,
+                                    _('display', 1, (Cell x) {
+                                      stdout.write(stringify(x.car,
+                                              false));
+                                      return #NONE;
+                                    },
+                                        _('newline', 0, (Cell x) {
+                                          stdout.writeln();
+                                          return #NONE;
                                         },
-                                            _('newline', 0, (Cell x) {
-                                              stdout.writeln();
-                                              return none;
-                                            },
-                                                _('read', 0, (Cell x) =>
-                                                    readExpression('', ''),
-                                                    _g1)))))))))))));
+                                            _('read', 0, (Cell x) =>
+                                                readExpression('', ''),
+                                                _g2))))))))))));
 
 //----------------------------------------------------------------------
 
@@ -461,48 +473,40 @@ Object evaluate(dynamic exp, Environment env) {
         if (exp is Cell) {
           dynamic kar = exp.car;
           dynamic kdr = exp.cdr;
-          if (identical(kar, quoteSym)) {
-            // (quote e)
+          if (identical(kar, quoteSym)) { // (quote e)
             exp = kdr.car;
             break;
-          } else if (identical(kar, ifSym)) {
-            // (if e1 e2 e3) or (if e1 e2)
+          } else if (identical(kar, ifSym)) { // (if e1 e2 e3) or (if e1 e2)
             exp = kdr.car;
-            k.push(ContOp.thenOp, kdr.cdr);
-          } else if (identical(kar, beginSym)) {
-            // (begin e...)
+            k.push(ContOp.THEN, kdr.cdr);
+          } else if (identical(kar, beginSym)) { // (begin e...)
             exp = kdr.car;
             if (kdr.cdr != null) {
-              k.push(ContOp.beginOp, kdr.cdr);
+              k.push(ContOp.BEGIN, kdr.cdr);
             }
-          } else if (identical(kar, lambdaSym)) {
-            // (lambda (v...) e...)
+          } else if (identical(kar, lambdaSym)) { // (lambda (v...) e...)
             exp = Closure(kdr.car, kdr.cdr, env);
             break;
-          } else if (identical(kar, defineSym)) {
-            // (define v e)
+          } else if (identical(kar, defineSym)) { // (define v e)
             exp = kdr.cdr.car;
-            k.push(ContOp.defineOp, kdr.car);
-          } else if (identical(kar, setqSym)) {
-            // (set! v e)
+            k.push(ContOp.DEFINE, kdr.car);
+          } else if (identical(kar, setqSym)) { // (set! v e)
             exp = kdr.cdr.car;
-            k.push(ContOp.setqOp, env.lookFor(kdr.car));
-          } else {
-            // (fun arg...)
+            k.push(ContOp.SETQ, env.lookFor(kdr.car));
+          } else {              // (fun arg...)
             exp = kar;
-            k.push(ContOp.applyOp, kdr);
+            k.push(ContOp.APPLY, kdr);
           }
         } else if (exp is Sym) {
           exp = env.lookFor(exp).val;
           break;
-        } else {
-          // a number, #t, #f etc.
+        } else {                // a number, #t, #f etc.
           break;
         }
       }
       Loop2:
       for (;;) {
-        // stdout.write(' _${k.length}');
+        // stdout.write('_${k.length}');
         if (k.isEmpty) {
           return exp;
         }
@@ -510,60 +514,60 @@ Object evaluate(dynamic exp, Environment env) {
         var op = step.op;
         dynamic x = step.val;
         switch (op) {
-          case ContOp.thenOp: // x = (e2 e3)
+          case ContOp.THEN:     // x = (e2 e3)
             if (exp == false) {
               if (x.cdr == null) {
-                exp = none;
+                exp = #NONE;
               } else {
                 exp = x.cdr.car; // e3
                 break Loop2;
               }
             } else {
-              exp = x.car; // e2
+              exp = x.car;      // e2
               break Loop2;
             }
             break;
-          case ContOp.beginOp: //  x = (e...)
+          case ContOp.BEGIN:    //  x = (e...)
             if (x.cdr != null) {
-              k.push(ContOp.beginOp, x.cdr); // unless on a tail call.
+              k.push(ContOp.BEGIN, x.cdr); // unless on a tail call.
             }
             exp = x.car;
             break Loop2;
-          case ContOp.defineOp: // x = v
+          case ContOp.DEFINE:        // x = v
             assert(env.sym == null); // Check for the frame top.
             env.next = Environment(x, exp, env.next);
-            exp = none;
+            exp = #NONE;
             break;
-          case ContOp.setqOp: // x = Environment(v, e, ...)
+          case ContOp.SETQ:     // x = Environment(v, e, ...)
             x.val = exp;
-            exp = none;
+            exp = #NONE;
             break;
-          case ContOp.applyOp: // x = arg...; exp = function
+          case ContOp.APPLY:    // x = arg...; exp = function
             if (x == null) {
               var pair = applyFunction(exp, null, k, env);
               exp = pair.result;
               env = pair.env;
             } else {
-              k.push(ContOp.applyFunOp, exp);
+              k.push(ContOp.APPLY_FUN, exp);
               while (x.cdr != null) {
-                k.push(ContOp.evalArgOp, x.car);
+                k.push(ContOp.EVAL_ARG, x.car);
                 x = x.cdr;
               }
               exp = x.car;
-              k.push(ContOp.pushArgOp, null);
+              k.push(ContOp.CONS_ARGS, null);
               break Loop2;
             }
             break;
-          case ContOp.pushArgOp: // x = evaluated arg...
+          case ContOp.CONS_ARGS: // x = evaluated arg...
             var args = Cell(exp, x);
             var step = k.pop();
             op = step.op;
             exp = step.val;
             switch (op) {
-              case ContOp.evalArgOp: // exp = the next arg
-                k.push(ContOp.pushArgOp, args);
+              case ContOp.EVAL_ARG: // exp = the next arg
+                k.push(ContOp.CONS_ARGS, args);
                 break Loop2;
-              case ContOp.applyFunOp: // exp = evaluated function
+              case ContOp.APPLY_FUN: // exp = evaluated function
                 var pair = applyFunction(exp, args, k, env);
                 exp = pair.result;
                 env = pair.env;
@@ -572,7 +576,7 @@ Object evaluate(dynamic exp, Environment env) {
                 throw 'unexpected op: $op';
             }
             break;
-          case ContOp.restoreEnvOp: // x = Environment(...)
+          case ContOp.RESTORE_ENV: // x = Environment(...)
             env = x;
             break;
           default:
@@ -595,17 +599,17 @@ class ResultEnvPair {
 }
 
 /// Applies a function to arguments with a continuation.
-/// [env] will be referred to push [ContOp.restoreEnvOp] to the continuation.
+/// [env] will be referred to push [ContOp.RESTORE_ENV] to the continuation.
 ResultEnvPair applyFunction(
     Object fun, Cell arg, Continuation k, Environment env) {
   for (;;) {
-    if (identical(fun, callccSym)) {
+    if (fun == #CALLCC) {
       k.pushRestoreEnv(env);
       fun = arg.car;
       var cont = Continuation();
       cont.copyFrom(k);
       arg = Cell(cont, null);
-    } else if (identical(fun, applySym)) {
+    } else if (fun == #APPLY) {
       fun = arg.car;
       arg = arg.cdr.car;
     } else {
@@ -620,11 +624,11 @@ ResultEnvPair applyFunction(
     return ResultEnvPair(fun.fun(arg), env);
   } else if (fun is Closure) {
     k.pushRestoreEnv(env);
-    k.push(ContOp.beginOp, fun.body);
+    k.push(ContOp.BEGIN, fun.body);
     return ResultEnvPair(
-        none,
+        #NONE,
         Environment(
-            null, // marker of the frame top
+            null,               // marker of the frame top
             null,
             fun.env.prependDefs(fun.params, arg)));
   } else if (fun is Continuation) {
@@ -644,13 +648,13 @@ List<String> splitStringIntoTokens(String source) {
   var result = <String>[];
   for (var line in source.split('\n')) {
     var x = <String>[];
-    var ss = <String>[]; // to store string literals
+    var ss = <String>[];        // to store string literals
     int i = 0;
     for (var e in line.split('"')) {
       if (i % 2 == 0) {
         x.add(e);
       } else {
-        ss.add('"' + e); // Stores a string literal.
+        ss.add('"' + e);        // Stores a string literal.
         x.add('#s');
       }
       i++;
@@ -730,12 +734,12 @@ Object readExpression([String prompt1 = '> ', String prompt2 = '| ']) {
     } on RangeError {
       stdout.write(old.isEmpty ? prompt1 : prompt2);
       var line = stdin.readLineSync();
-      if (line == null) // EOF
+      if (line == null)         // EOF
         return #EOF;
       stdInTokens = old;
       stdInTokens.addAll(splitStringIntoTokens(line));
     } on String {
-      stdInTokens.clear(); // Discards the erroneous tokens.
+      stdInTokens.clear();      // Discards the erroneous tokens.
       rethrow;
     }
   }
@@ -751,7 +755,7 @@ void readEvalPrintLoop() {
         return;
       }
       var result = evaluate(exp, globalEnv);
-      if (result != none) {
+      if (result != #NONE) {
         print(stringify(result, true));
       }
     } catch (ex) {
