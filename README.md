@@ -116,8 +116,8 @@ $ cat ../little-scheme/examples/fib90.scm
 $ ./scm.dart ../little-scheme/examples/fib90.scm -
 2880067194370816120
 > (globals)
-(globals error number? = < * - + apply call/cc symbol? eof-object? read newline
-display list not null? pair? eq? cons cdr car fibonacci)
+(fibonacci globals error number? = < * - + apply call/cc symbol? eof-object? rea
+d newline display list not null? pair? eq? cons cdr car)
 > (fibonacci 16)
 987
 > (fibonacci 1000)
@@ -194,8 +194,8 @@ For simplicity, this Scheme treats (`define` _v_ _e_) as an expression type.
 - `(globals)` returns a list of keys of the global environment.
   It is not in the standards.
 
-See [`globalEnv`](scm.dart#L421-L463)
+See [`globalEnv`](scm.dart#L425-L469)
 in `scm.dart` for the implementation of the procedures
 except `call/cc` and `apply`.  
 `call/cc` and `apply` are implemented particularly at 
-[`applyFunction`](scm.dart#L601-L640) in `scm.dart`.
+[`applyFunction`](scm.dart#L603-L636) in `scm.dart`.

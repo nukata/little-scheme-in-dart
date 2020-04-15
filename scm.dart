@@ -1,5 +1,5 @@
 #!/usr/bin/env dart
-// A Little Scheme in Dart 2.7, v0.4 H31.03.23/R02.04.09 by SUZUKI Hisao
+// A Little Scheme in Dart 2.7, v0.5 H31.03.23/R02.04.15 by SUZUKI Hisao
 
 import 'dart:io';
 
@@ -150,32 +150,34 @@ Object tryParse(String s) {
 //----------------------------------------------------------------------
 
 /// Cons cell
-class Cell extends Iterable<dynamic> {
-  final dynamic car;
+class Cell extends Iterable<Object> {
+  final Object car;
   dynamic cdr;
 
   Cell(this.car, this.cdr);
 
   /// Yields car, cadr, caddr and so on.
-  Iterator<dynamic> get iterator => _CellIterator(this);
-
-  // _iter().iterator where _iter() is defined as sync* {...} is slow.
+  Iterator<Object> get iterator => _CellIterator(this);
 }
 
-class _CellIterator extends Iterator<dynamic> {
+class _CellIterator extends Iterator<Object> {
   Cell j = null;
   dynamic k;
 
   _CellIterator(this.k);
 
-  dynamic get current => j?.car;
+  Object get current => j?.car;
 
   bool moveNext() {
-    if (k == null) return false;
-    if (k is! Cell) throw ImproperListException(k);
-    j = k;
-    k = k.cdr;
-    return true;
+    if (k == null) {
+      return false;
+    } else if (k is Cell) {
+      j = k as Cell;
+      k = k.cdr;
+      return true;
+    } else {
+      throw ImproperListException(k);
+    }
   }
 }
 
@@ -202,9 +204,8 @@ class Sym {
   static final Map<String, Sym> symbols = {};
 
   /// Constructs an interned symbol.
-  factory Sym(String name) {
-    return symbols.putIfAbsent(name, () => new Sym.notInterned(name));
-  }
+  factory Sym(String name) =>
+    symbols.putIfAbsent(name, () => Sym.notInterned(name));
 }
 
 final quoteSym = Sym('quote');
@@ -218,51 +219,72 @@ final callccSym = Sym('call/cc');
 
 //----------------------------------------------------------------------
 
-/// Linked list of bindings mapping symbols to values
-class Environment extends Iterable<Environment> {
-  final Sym sym;
-  Object val;
-  Environment next;
+typedef void Setter(Object val);
 
-  Environment(this.sym, this.val, this.next);
+/// List of frames which map symbols to values
+class Environment {
+  List<Sym> _names;
+  List<Object> _values;
+  Environment _next;
 
-  /// Yields each binding.
-  Iterator<Environment> get iterator => _EnvironmentIterator(this);
+  /// Construct a new frame on the [next] (= current) environment or null.
+  Environment(Cell symbols, Cell data, Environment next) {
+    var names = symbols?.map((e) => (e as Sym))?.toList() ?? [];
+    var values = data?.toList() ?? [];
+    if (names?.length != values?.length)
+      throw 'arity not matched: $names and $values';
+    _names = names;
+    _values = values;
+    _next = next;
+  }
 
-  // _iter().iterator where _iter() is defined as sync* {...} is slow.
+  /// Searches the environment for [symbol] and returns its setter.
+  Setter lookForSetter(Sym symbol) {
+    var frame = this;
+    do {
+      int i = frame._names.indexOf(symbol);
+      if (i >= 0)
+        return (Object val) { frame._values[i] = val; };
+      frame = frame._next;
+    } while (frame != null);
+    throw 'name to be set not found: $symbol';
+  }
 
-  /// Searches the bindings for [symbol].
-  Environment lookFor(Sym symbol) {
-    for (var env in this) if (identical(env.sym, symbol)) return env;
+  /// Searches the environment for [symbol] and returns its value.
+  Object lookForValue(Sym symbol) {
+    var frame = this;
+    do {
+      int i = frame._names.indexOf(symbol);
+      if (i >= 0)
+        return frame._values[i];
+      frame = frame._next;
+    } while (frame != null);
     throw 'name not found: $symbol';
   }
 
-  /// Builds an environment prepending the bindings of [symbols] and [data].
-  Environment prependDefs(Cell symbols, Cell data) {
-    if (symbols == null) {
-      if (data != null) throw 'surplus arg: ${stringify(data)}';
-      return this;
+  /// Defines [symbol] as [value] in the current frame.
+  void defineSymbol(Sym symbol, Object value) {
+    int i = _names.indexOf(symbol);
+    if (i >= 0) {
+      _values[i] = value;
     } else {
-      if (data == null) throw 'surplus param: ${stringify(symbols)}';
-      return Environment(
-          symbols.car, data.car, prependDefs(symbols.cdr, data.cdr));
+      _names.add(symbol);
+      _values.add(value);
     }
   }
-}
 
-class _EnvironmentIterator extends Iterator<Environment> {
-  Environment j = null;
-  Environment k;
+  /// Symbols in the current frame
+  Iterable<Sym> get names => _names;
 
-  _EnvironmentIterator(this.k);
-
-  Environment get current => j;
-
-  bool moveNext() {
-    if (k == null) return false;
-    j = k;
-    k = k.next;
-    return true;
+  @override
+  String toString() {
+    var ss = <String>[];
+    var frame = this;
+    do {
+      ss.add(frame._names.toString());
+      frame = frame._next;
+    } while (frame != null);
+    return '#<' + ss.join('|') + '>';
   }
 }
 
@@ -297,7 +319,8 @@ class Continuation extends Iterable<Step> {
   int get length => _stack.length;
 
   Iterable<Step> _iter() sync* {
-    for (var step in _stack) yield step;
+    for (var step in _stack)
+      yield step;
   }
 
   /// Yields each step.
@@ -318,9 +341,8 @@ class Continuation extends Iterable<Step> {
   /// Pushes [ContOp.RESTORE_ENV] unless on a tail call.
   void pushRestoreEnv(Environment env) {
     int len = _stack.length;
-    if (len == 0 || _stack[len - 1].op != ContOp.RESTORE_ENV) {
+    if (len == 0 || _stack[len - 1].op != ContOp.RESTORE_ENV)
       push(ContOp.RESTORE_ENV, env);
-    }
   }
 }
 
@@ -372,34 +394,27 @@ String stringify(Object exp, [bool quote = true]) {
   if (exp is Cell) {
     var ss = <String>[];
     try {
-      for (var e in exp) ss.add(stringify(e, quote));
+      for (var e in exp)
+        ss.add(stringify(e, quote));
     } on ImproperListException catch (ex) {
       ss.add('.');
       ss.add(stringify(ex.tail, quote));
     }
     return '(' + ss.join(' ') + ')';
-  } else if (exp is Environment) {
+  }
+  if (exp is Continuation) {
     var ss = <String>[];
-    for (var env in exp) {
-      if (identical(env, globalEnv)) {
-        ss.add('GlobalEnv');
-        break;
-      } else if (env.sym == null) // marker of the frame top
-        ss.add('|');
-      else
-        ss.add('${env.sym}');
-    }
-    return '#<' + ss.join(' ') + '>';
-  } else if (exp is Continuation) {
-    var ss = <String>[];
-    for (var step in exp) ss.add('${step.op} ${stringify(step.val)}');
+    for (var step in exp)
+      ss.add('${step.op} ${stringify(step.val)}');
     return '#<' + ss.join('\n\t  ') + '>';
-  } else if (exp is Closure) {
+  }
+  if (exp is Closure) {
     var p = stringify(exp.params);
     var v = stringify(exp.body);
     var e = stringify(exp.env);
     return '#<$p:$v:$e>';
-  } else if ((exp is String) && quote) {
+  }
+  if ((exp is String) && quote) {
     return '"' + exp + '"';
   }
   return "$exp";
@@ -407,60 +422,51 @@ String stringify(Object exp, [bool quote = true]) {
 
 //----------------------------------------------------------------------
 
-/// Returns a list of symbols of the global environment.
-Cell _globals(Cell x) {
-  Cell j = null;
-  Environment env = globalEnv.next; // Skips the marker.
-  for (Environment e in env) j = Cell(e.sym, j);
-  return j;
-}
-
-Environment _(String name, int arity, IntrinsicBody fun, Environment next) =>
-    Environment(Sym(name), Intrinsic(name, arity, fun), next);
-
-Environment _g1 =
-  _('+', 2, (Cell x) => add(x.car, x.cdr.car),
-      _('-', 2, (Cell x) => subtract(x.car, x.cdr.car),
-          _('*', 2, (Cell x) => multiply(x.car, x.cdr.car),
-              _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0,
-                  _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0,
-                      _('number?', 1, (Cell x) => isNumber(x.car),
-                          _('error', 2, (Cell x) =>
-                              throw ErrorException(x.car, x.cdr.car),
-                              _('globals', 0, _globals,
-                                  null))))))));
-
-Environment _g2 =
-  _('eof-object?', 1, (Cell x) => x.car == #EOF,
-      _('symbol?', 1, (Cell x) => x.car is Sym,
-          Environment(callccSym, #CALLCC,
-              Environment(applySym, #APPLY,
-                  _g1))));
-
 /// Scheme's global environment
-Environment globalEnv = Environment(
-    null, // marker of the frame top
-    null,
-    _('car', 1, (Cell x) => x.car.car,
-        _('cdr', 1, (Cell x) => x.car.cdr,
-            _('cons', 2, (Cell x) => Cell(x.car, x.cdr.car),
-                _('eq?', 2, (Cell x) => identical(x.car, x.cdr.car),
-                    _('pair?', 1, (Cell x) => x.car is Cell,
-                        _('null?', 1, (Cell x) => x.car == null,
-                            _('not', 1, (Cell x) => x.car == false,
-                                _('list', -1, (Cell x) => x,
-                                    _('display', 1, (Cell x) {
-                                      stdout.write(stringify(x.car,
-                                              false));
-                                      return #NONE;
-                                    },
-                                        _('newline', 0, (Cell x) {
-                                          stdout.writeln();
-                                          return #NONE;
-                                        },
-                                            _('read', 0, (Cell x) =>
-                                                readExpression('', ''),
-                                                _g2))))))))))));
+Environment globalEnv = (() {
+  var env = Environment(null, null, null);
+  var _ = (String name, int arity, IntrinsicBody fun) {
+    env.defineSymbol(Sym(name), Intrinsic(name, arity, fun));
+  };
+
+  _('car', 1, (Cell x) => (x.car as Cell).car);
+  _('cdr', 1, (Cell x) => (x.car as Cell).cdr);
+  _('cons', 2, (Cell x) => Cell(x.car, x.cdr.car));
+  _('eq?', 2, (Cell x) => identical(x.car, x.cdr.car));
+  _('pair?', 1, (Cell x) => x.car is Cell);
+  _('null?', 1, (Cell x) => x.car == null);
+  _('not', 1, (Cell x) => x.car == false);
+  _('list', -1, (Cell x) => x);
+  _('display', 1, (Cell x) {
+    stdout.write(stringify(x.car, false));
+    return #NONE;
+  });
+  _('newline', 0, (Cell x) {
+    stdout.writeln();
+    return #NONE;
+  });
+  _('read', 0, (Cell x) => readExpression('', ''));
+  _('eof-object?', 1, (Cell x) => x.car == #EOF);
+  _('symbol?', 1, (Cell x) => x.car is Sym);
+
+  env.defineSymbol(callccSym, #CALLCC);
+  env.defineSymbol(applySym, #APPLY);
+
+  _('+', 2, (Cell x) => add(x.car, x.cdr.car));
+  _('-', 2, (Cell x) => subtract(x.car, x.cdr.car));
+  _('*', 2, (Cell x) => multiply(x.car, x.cdr.car));
+  _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0);
+  _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0);
+  _('number?', 1, (Cell x) => isNumber(x.car));
+  _('error', 2, (Cell x) => throw ErrorException(x.car, x.cdr.car));
+  _('globals', 0, (Cell x) {
+    Cell j = null;
+    for (Sym symbol in globalEnv.names)
+      j = Cell(symbol, j);
+    return j;
+  });
+  return env;
+})();
 
 //----------------------------------------------------------------------
 
@@ -471,7 +477,7 @@ Object evaluate(dynamic exp, Environment env) {
     for (;;) {
       for (;;) {
         if (exp is Cell) {
-          dynamic kar = exp.car;
+          Object kar = exp.car;
           dynamic kdr = exp.cdr;
           if (identical(kar, quoteSym)) { // (quote e)
             exp = kdr.car;
@@ -481,24 +487,23 @@ Object evaluate(dynamic exp, Environment env) {
             k.push(ContOp.THEN, kdr.cdr);
           } else if (identical(kar, beginSym)) { // (begin e...)
             exp = kdr.car;
-            if (kdr.cdr != null) {
+            if (kdr.cdr != null)
               k.push(ContOp.BEGIN, kdr.cdr);
-            }
           } else if (identical(kar, lambdaSym)) { // (lambda (v...) e...)
-            exp = Closure(kdr.car, kdr.cdr, env);
+            exp = Closure(kdr.car as Cell, kdr.cdr as Cell, env);
             break;
           } else if (identical(kar, defineSym)) { // (define v e)
             exp = kdr.cdr.car;
             k.push(ContOp.DEFINE, kdr.car);
           } else if (identical(kar, setqSym)) { // (set! v e)
             exp = kdr.cdr.car;
-            k.push(ContOp.SETQ, env.lookFor(kdr.car));
+            k.push(ContOp.SETQ, env.lookForSetter(kdr.car as Sym));
           } else {              // (fun arg...)
             exp = kar;
             k.push(ContOp.APPLY, kdr);
           }
         } else if (exp is Sym) {
-          exp = env.lookFor(exp).val;
+          exp = env.lookForValue(exp as Sym);
           break;
         } else {                // a number, #t, #f etc.
           break;
@@ -507,14 +512,13 @@ Object evaluate(dynamic exp, Environment env) {
       Loop2:
       for (;;) {
         // stdout.write('_${k.length}');
-        if (k.isEmpty) {
+        if (k.isEmpty)
           return exp;
-        }
         var step = k.pop();
         var op = step.op;
         dynamic x = step.val;
         switch (op) {
-          case ContOp.THEN:     // x = (e2 e3)
+          case ContOp.THEN:     // x is (e2 e3) of (if e1 e2 e3).
             if (exp == false) {
               if (x.cdr == null) {
                 exp = #NONE;
@@ -527,22 +531,20 @@ Object evaluate(dynamic exp, Environment env) {
               break Loop2;
             }
             break;
-          case ContOp.BEGIN:    //  x = (e...)
-            if (x.cdr != null) {
+          case ContOp.BEGIN:    //  x is (e...) of (begin e...).
+            if (x.cdr != null)
               k.push(ContOp.BEGIN, x.cdr); // unless on a tail call.
-            }
             exp = x.car;
             break Loop2;
-          case ContOp.DEFINE:        // x = v
-            assert(env.sym == null); // Check for the frame top.
-            env.next = Environment(x, exp, env.next);
+          case ContOp.DEFINE:   // x is a Sym to be defined.
+            env.defineSymbol(x as Sym, exp);
             exp = #NONE;
             break;
-          case ContOp.SETQ:     // x = Environment(v, e, ...)
-            x.val = exp;
+          case ContOp.SETQ:     // x is a Setter.
+            x(exp);
             exp = #NONE;
             break;
-          case ContOp.APPLY:    // x = arg...; exp = function
+          case ContOp.APPLY:    // x is a list of arguments to be eval'ed.
             if (x == null) {
               var pair = applyFunction(exp, null, k, env);
               exp = pair.result;
@@ -558,16 +560,16 @@ Object evaluate(dynamic exp, Environment env) {
               break Loop2;
             }
             break;
-          case ContOp.CONS_ARGS: // x = evaluated arg...
+          case ContOp.CONS_ARGS: // x is the evaluated arguments to be cons'ed.
             var args = Cell(exp, x);
             var step = k.pop();
             op = step.op;
             exp = step.val;
             switch (op) {
-              case ContOp.EVAL_ARG: // exp = the next arg
+              case ContOp.EVAL_ARG: // exp is the next argument to be eval'ed.
                 k.push(ContOp.CONS_ARGS, args);
                 break Loop2;
-              case ContOp.APPLY_FUN: // exp = evaluated function
+              case ContOp.APPLY_FUN: // exp is the evaluated function.
                 var pair = applyFunction(exp, args, k, env);
                 exp = pair.result;
                 env = pair.env;
@@ -576,8 +578,8 @@ Object evaluate(dynamic exp, Environment env) {
                 throw 'unexpected op: $op';
             }
             break;
-          case ContOp.RESTORE_ENV: // x = Environment(...)
-            env = x;
+          case ContOp.RESTORE_ENV: // x is an Environment.
+            env = x as Environment;
             break;
           default:
             throw 'bad op: $op';
@@ -591,17 +593,16 @@ Object evaluate(dynamic exp, Environment env) {
   }
 }
 
-class ResultEnvPair {
+class REPair {
   final Object result;
   final Environment env;
 
-  ResultEnvPair(this.result, this.env);
+  REPair(this.result, this.env);
 }
 
 /// Applies a function to arguments with a continuation.
 /// [env] will be referred to push [ContOp.RESTORE_ENV] to the continuation.
-ResultEnvPair applyFunction(
-    Object fun, Cell arg, Continuation k, Environment env) {
+REPair applyFunction(Object fun, Cell arg, Continuation k, Environment env) {
   for (;;) {
     if (fun == #CALLCC) {
       k.pushRestoreEnv(env);
@@ -611,7 +612,7 @@ ResultEnvPair applyFunction(
       arg = Cell(cont, null);
     } else if (fun == #APPLY) {
       fun = arg.car;
-      arg = arg.cdr.car;
+      arg = arg.cdr.car as Cell;
     } else {
       break;
     }
@@ -621,19 +622,14 @@ ResultEnvPair applyFunction(
       if (arg == null ? fun.arity > 0 : arg.length != fun.arity)
         throw 'arity not matched: $fun and ${stringify(arg)}';
     }
-    return ResultEnvPair(fun.fun(arg), env);
+    return REPair(fun.fun(arg), env);
   } else if (fun is Closure) {
     k.pushRestoreEnv(env);
     k.push(ContOp.BEGIN, fun.body);
-    return ResultEnvPair(
-        #NONE,
-        Environment(
-            null,               // marker of the frame top
-            null,
-            fun.env.prependDefs(fun.params, arg)));
+    return REPair(#NONE, Environment(fun.params, arg, fun.env));
   } else if (fun is Continuation) {
     k.copyFrom(fun);
-    return ResultEnvPair(arg.car, env);
+    return REPair(arg.car, env);
   } else {
     throw 'not a function: ${stringify(fun)} with ${stringify(arg)}';
   }
@@ -665,7 +661,8 @@ List<String> splitStringIntoTokens(String source) {
     for (var e in x)
       if (e == '#s')
         result.add(ss.removeAt(0));
-      else if (e != '') result.add(e);
+      else if (e != '')
+        result.add(e);
   }
   return result;
 }
@@ -682,7 +679,8 @@ Object readFromTokens(List<String> tokens) {
         if (tokens[0] == '.') {
           tokens.removeAt(0);
           y.cdr = readFromTokens(tokens);
-          if (tokens[0] != ')') throw ') is expected';
+          if (tokens[0] != ')')
+            throw ') is expected';
           break;
         }
         var e = readFromTokens(tokens);
@@ -704,9 +702,8 @@ Object readFromTokens(List<String> tokens) {
   }
   if (token[0] == '"') {
     return token.substring(1);
-  } else {
-    return tryParse(token) ?? Sym(token);
   }
+  return tryParse(token) ?? Sym(token);
 }
 
 //----------------------------------------------------------------------
@@ -755,9 +752,8 @@ void readEvalPrintLoop() {
         return;
       }
       var result = evaluate(exp, globalEnv);
-      if (result != #NONE) {
+      if (result != #NONE)
         print(stringify(result, true));
-      }
     } catch (ex) {
       print(ex);
     }
@@ -767,7 +763,8 @@ void readEvalPrintLoop() {
 void main(List<String> args) {
   if (args.length > 0) {
     load(args[0]);
-    if (!(args.length > 1 && args[1] == '-')) exit(0);
+    if (!(args.length > 1 && args[1] == '-'))
+      exit(0);
   }
   readEvalPrintLoop();
 }
