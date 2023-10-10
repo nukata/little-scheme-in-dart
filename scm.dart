@@ -484,8 +484,11 @@ Environment globalEnv = (() {
   _('-', 2, (Cell x) => subtract(x.car, x.cdr.car));
   _('*', 2, (Cell x) => multiply(x.car, x.cdr.car));
   _('/', 2, (Cell x) => divide(x.car, x.cdr.car));
+  _('>', 2, (Cell x) => compare(x.car, x.cdr.car) > 0);
   _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0);
   _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0);
+  _('<=', 2, (Cell x) => compare(x.car, x.cdr.car) <= 0);
+  _('>=', 2, (Cell x) => compare(x.car, x.cdr.car) >= 0);
   _('number?', 1, (Cell x) => isNumber(x.car));
   _('error', 2, (Cell x) => throw ErrorException(x.car, x.cdr.car));
   _('globals', 0, (Cell x) {
