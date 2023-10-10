@@ -1,4 +1,5 @@
 #!/usr/bin/env dart
+// @dart=2.9
 // A Little Scheme in Dart 2.7, v0.5 H31.03.23/R02.04.15 by SUZUKI Hisao
 
 import 'dart:io';
@@ -139,6 +140,33 @@ Object multiply(Object a, Object b) {
   }
   throw ArgumentError("$a, $b");
 }
+
+/// Calculates [a] / [b] (rounded quotient).
+double divide(a, b) {
+  if (a is int) {
+    if (b is num) {
+      return a / b;
+    } else if (b is BigInt) {
+      return BigInt.from(a) / b;
+    }
+  } else if (a is double) {
+    if (b is num) {
+      return a / b;
+    } else if (b is BigInt) {
+      return a / b.toDouble();
+    }
+  } else if (a is BigInt) {
+    if (b is int) {
+      return a / BigInt.from(b);
+    } else if (b is double) {
+      return a.toDouble() / b;
+    } else if (b is BigInt) {
+      return a / b;
+    }
+  }
+  throw ArgumentError("$a, $b");
+}
+
 
 /// Tries to parse a string as an int, a BigInt or a double.
 /// Returns null if [s] was not parsed successfully.
@@ -455,8 +483,12 @@ Environment globalEnv = (() {
   _('+', 2, (Cell x) => add(x.car, x.cdr.car));
   _('-', 2, (Cell x) => subtract(x.car, x.cdr.car));
   _('*', 2, (Cell x) => multiply(x.car, x.cdr.car));
+  _('/', 2, (Cell x) => divide(x.car, x.cdr.car));
+  _('>', 2, (Cell x) => compare(x.car, x.cdr.car) > 0);
   _('<', 2, (Cell x) => compare(x.car, x.cdr.car) < 0);
   _('=', 2, (Cell x) => compare(x.car, x.cdr.car) == 0);
+  _('<=', 2, (Cell x) => compare(x.car, x.cdr.car) <= 0);
+  _('>=', 2, (Cell x) => compare(x.car, x.cdr.car) >= 0);
   _('number?', 1, (Cell x) => isNumber(x.car));
   _('error', 2, (Cell x) => throw ErrorException(x.car, x.cdr.car));
   _('globals', 0, (Cell x) {
